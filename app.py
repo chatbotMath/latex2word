@@ -159,8 +159,15 @@ class LaTeXToWordConverter:
     
     def clean_latex_text(self, text):
         """Clean LaTeX commands from text for Word"""
-        # Remove common LaTeX commands
-        text = re.sub(r'\$([^$]+)\
+        # Dòng này tìm kiếm văn bản được bao trong dấu '$' (ví dụ: $E=mc^2$)
+        # và thay thế nó chỉ bằng nội dung bên trong (ví dụ: E=mc^2).
+        text = re.sub(r'\$([^$]+)\$', r'\1', text)
+        
+        # Bạn có thể thêm các lệnh re.sub khác ở đây để xóa các lệnh LaTeX khác
+        # Ví dụ: xóa \textit{...}
+        # text = re.sub(r'\\textit{([^}]+)}', r'\1', text)
+        
+        return text
     
     def compile_tikz_to_image(self, tikz_code, filename_base):
         """Compile TikZ code to image"""
