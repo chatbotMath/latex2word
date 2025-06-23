@@ -12,63 +12,55 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 import io
+import shutil
 
 class LaTeXToWordConverter:
     def __init__(self):
         self.temp_dir = tempfile.mkdtemp()
-        
+
     def extract_exercises(self, latex_content):
         """Extract all exercises from LaTeX content"""
         # Pattern to match \begin{ex} ... \end{ex}
-        # Using more robust pattern to handle nested braces
-        exercises = []
-        
-        # Find all ex blocks
         ex_pattern = r'\\begin\{ex\}(.*?)\\end\{ex\}'
         matches = re.finditer(ex_pattern, latex_content, re.DOTALL)
         
-        for match in matches:
-            exercise_content = match.group(1).strip()
-            if exercise_content:
-                exercises.append(exercise_content)
-        
+        exercises = [match.group(1).strip() for match in matches if match.group(1).strip()]
         return exercises
-    
+
     def parse_exercise(self, exercise_content):
         """Parse individual exercise content"""
-        # Extract question (content before \choice or \immini)
+        # Extract question (content before \choice or inside \immini)
         question_match = re.search(r'\\immini\{(.*?)\}', exercise_content, re.DOTALL)
-        if not question_match:
-            # Try to find question before \choice
-            parts = re.split(r'\\choice\s*\n', exercise_content, maxsplit=1)
-            question = parts[0].strip() if parts else ""
+        if question_match:
+            question_content = question_match.group(1).strip()
         else:
-            question = question_match.group(1).strip()
-        
+            # If \immini is not found, take everything before \choice
+            parts = re.split(r'\\choice', exercise_content, maxsplit=1)
+            question_content = parts[0].strip()
+
         # Extract choices and find correct answer
         choices = []
         correct_choice_index = -1
         
         # Find the choice section more accurately
-        choice_match = re.search(r'\\choice\s*\n(.*?)(?=\\begin\{tikzpicture\}|\\begin\{tabular\}|\\loigiai|$)', 
-                                exercise_content, re.DOTALL)
+        choice_match = re.search(r'\\choice\s*(.*?)(?=\\begin\{tikzpicture\}|\\begin\{tabular\}|\\loigiai|\\end\{ex\}|$)', 
+                                 exercise_content, re.DOTALL)
         
         if choice_match:
             choices_text = choice_match.group(1)
             
-            # More precise pattern to extract individual choices
-            # This handles multiline choices and nested braces
+            # More precise pattern to extract individual choices, handling nested braces
             choice_pattern = r'\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}'
             raw_choices = re.findall(choice_pattern, choices_text)
             
             # Process each choice
-            for idx, choice in enumerate(raw_choices):
+            for choice in raw_choices:
                 choice = choice.strip()
                 if choice:
                     # Check if this is the correct answer
                     if choice.startswith('\\True'):
                         correct_choice_index = len(choices)  # Current index before appending
-                        # Remove \True marker and clean the choice
+                        # Remove \True marker
                         choice = re.sub(r'^\\True\s*', '', choice).strip()
                     choices.append(choice)
         
@@ -76,7 +68,7 @@ class LaTeXToWordConverter:
         tikz_match = re.search(r'\\begin\{tikzpicture\}(.*?)\\end\{tikzpicture\}', exercise_content, re.DOTALL)
         tikz_content = tikz_match.group(0) if tikz_match else None
         
-        # Extract tables
+        # Extract tables from the entire exercise content
         tables = self.extract_and_convert_tables(exercise_content)
         
         # Extract solution
@@ -84,23 +76,20 @@ class LaTeXToWordConverter:
         solution = solution_match.group(1).strip() if solution_match else None
         
         return {
-            'question': question,
+            'question': question_content,
             'choices': choices,
             'correct_choice': correct_choice_index,
             'tikz': tikz_content,
             'tables': tables,
             'solution': solution
         }
-    
+
     def extract_and_convert_tables(self, content):
         """Extract LaTeX tables and convert to markdown format"""
         tables = []
-        
-        # Find all tabular environments
         tabular_pattern = r'\\begin\{tabular\}(\{[^}]*\})(.*?)\\end\{tabular\}'
-        tabular_matches = re.finditer(tabular_pattern, content, re.DOTALL)
         
-        for match in tabular_matches:
+        for match in re.finditer(tabular_pattern, content, re.DOTALL):
             column_spec = match.group(1)
             table_content = match.group(2)
             
@@ -112,97 +101,105 @@ class LaTeXToWordConverter:
             tables.append(markdown_table)
             
         return tables
-    
+
     def latex_table_to_markdown(self, table_content, col_count):
-        """Convert LaTeX table content to markdown table"""
-        # Clean up the content
+        """Convert LaTeX table content to markdown table, preserving math formulas"""
         lines = table_content.strip().split('\\\\')
         lines = [line.strip() for line in lines if line.strip() and not line.strip().startswith('\\hline')]
         
         markdown_rows = []
-        
         for line in lines:
-            # Skip pure \hline commands
-            if '\\hline' in line and '&' not in line:
+            line = line.replace('\\hline', '').strip()
+            if not line:
                 continue
                 
-            # Remove \hline from lines that have content
-            line = line.replace('\\hline', '').strip()
-            
-            # Split by & and clean each cell
             cells = line.split('&')
-            cells = [self.clean_latex_text(cell.strip()) for cell in cells]
+            # Use the new preparation function that preserves LaTeX math
+            cells = [self.prepare_latex_for_word(cell.strip()) for cell in cells]
             
-            # Pad row if necessary
+            # Pad or trim row to match column count
             while len(cells) < col_count:
                 cells.append('')
-            
-            # Trim extra cells if necessary
             cells = cells[:col_count]
             
-            # Create markdown row
             markdown_row = '| ' + ' | '.join(cells) + ' |'
             markdown_rows.append(markdown_row)
         
-        # Add header separator (assuming first row is header)
+        # Add markdown header separator
         if markdown_rows:
             separator = '| ' + ' | '.join(['---'] * col_count) + ' |'
             markdown_rows.insert(1, separator)
         
         return '\n'.join(markdown_rows)
-    
+
     def create_table_from_markdown(self, doc, markdown_table):
         """Create a Word table from markdown format"""
-        lines = markdown_table.strip().split('\n')
-        if len(lines) < 3:  # Need at least header, separator, and one data row
+        lines = [line for line in markdown_table.strip().split('\n') if line]
+        if not lines:
             return
-        
-        # Parse the table
-        rows = []
-        for line in lines:
-            if '---' in line:  # Skip separator line
-                continue
-            # Extract cells between pipes
+
+        # Filter out separator line
+        data_lines = [line for line in lines if '---' not in line]
+        if len(data_lines) == 0:
+            return
+
+        rows_data = []
+        for line in data_lines:
             cells = [cell.strip() for cell in line.split('|')[1:-1]]
-            rows.append(cells)
+            rows_data.append(cells)
         
-        if not rows:
+        if not rows_data:
             return
-        
-        # Create table in Word
-        table = doc.add_table(rows=len(rows), cols=len(rows[0]))
+
+        num_rows = len(rows_data)
+        num_cols = len(rows_data[0]) if rows_data else 0
+
+        table = doc.add_table(rows=num_rows, cols=num_cols)
         table.style = 'Table Grid'
         
-        # Populate table
-        for i, row_data in enumerate(rows):
-            for j, cell_data in enumerate(row_data):
-                table.cell(i, j).text = cell_data
-                # Bold the header row
-                if i == 0:
-                    for paragraph in table.cell(i, j).paragraphs:
-                        for run in paragraph.runs:
-                            run.bold = True
+        for i, row_cells in enumerate(rows_data):
+            for j, cell_text in enumerate(row_cells):
+                if j < len(table.rows[i].cells):
+                    table.cell(i, j).text = cell_text
+                    # Bold the header row (first row)
+                    if i == 0:
+                        for para in table.cell(i, j).paragraphs:
+                            for run in para.runs:
+                                run.bold = True
     
-    def clean_latex_text(self, text):
-        """Clean LaTeX commands from text for Word"""
-        # Remove common LaTeX commands
-        # text = re.sub(r'\$([^$]+)\$', r'\1', text)  # Remove math delimiters
+    def prepare_latex_for_word(self, text):
+        """
+        Cleans LaTeX text for Word output, with a key change:
+        - KEEPS math environments ($...$, $$...$$) intact.
+        - Removes specified environments like center, align.
+        """
+        # Remove specific environments but keep their content
+        text = re.sub(r'\\begin\{center\}', '', text, flags=re.DOTALL)
+        text = re.sub(r'\\end\{center\}', '', text, flags=re.DOTALL)
+        text = re.sub(r'\\begin\{align\*?\}', '', text, flags=re.DOTALL)
+        text = re.sub(r'\\end\{align\*?\}', '', text, flags=re.DOTALL)
+        
+        # General text cleaning
         text = re.sub(r'\\item', '•', text)
         text = re.sub(r'\\begin\{itemize\}', '', text)
         text = re.sub(r'\\end\{itemize\}', '', text)
-        text = re.sub(r'\\textbf\{([^}]*)\}', r'\1', text)  # Extract bold text
-        text = re.sub(r'\\textit\{([^}]*)\}', r'\1', text)  # Extract italic text
-        text = re.sub(r'\\text\{([^}]*)\}', r'\1', text)    # Extract text
-        # text = re.sub(r'\\[a-zA-Z]+\{([^}]*)\}', r'\1', text)  # Remove other commands
-        # text = re.sub(r'\\([a-zA-Z]+)', r'\1', text)  # Remove backslash commands
-        text = re.sub(r'\\\\', '', text)  # Remove line breaks
-        text = re.sub(r'\\hline', '', text)  # Remove hline
-        text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
-        return text.strip()
-    
+        
+        # Handle formatting commands but keep content
+        text = re.sub(r'\\textbf\{([^}]*)\}', r'\1', text)
+        text = re.sub(r'\\textit\{([^}]*)\}', r'\1', text)
+        text = re.sub(r'\\text\{([^}]*)\}', r'\1', text)
+
+        # Remove commands that are typically just for spacing or line breaks in LaTeX
+        text = text.replace('\\\\', '') # Remove double backslash
+        text = text.replace('\\hline', '') # Remove hline
+        
+        # Normalize whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        return text
+
     def compile_tikz_to_image(self, tikz_code, filename_base):
-        """Compile TikZ code to image"""
-        # Create complete LaTeX document
+        """Compile TikZ code to a PNG image."""
         latex_doc = f"""
 \\documentclass[border=5pt]{{standalone}}
 \\usepackage{{tikz}}
@@ -212,129 +209,117 @@ class LaTeXToWordConverter:
 {tikz_code}
 \\end{{document}}
 """
-        
-        # Write to temporary file
         tex_file = os.path.join(self.temp_dir, f"{filename_base}.tex")
         with open(tex_file, 'w', encoding='utf-8') as f:
             f.write(latex_doc)
-        
+            
         try:
             # Compile with pdflatex
-            subprocess.run(['pdflatex', '-interaction=nonstopmode', '-output-directory', self.temp_dir, tex_file], 
-                         capture_output=True, check=True)
+            subprocess.run(
+                ['pdflatex', '-interaction=nonstopmode', '-output-directory', self.temp_dir, tex_file],
+                capture_output=True, check=True, timeout=30
+            )
             
             # Convert PDF to PNG
-            pdf_file = os.path.join(self.temp_dir, f"{filename_base}.pdf")
-            png_file = os.path.join(self.temp_dir, f"{filename_base}.png")
+            pdf_file = Path(self.temp_dir) / f"{filename_base}.pdf"
+            png_file = Path(self.temp_dir) / f"{filename_base}.png"
             
-            # Use pdftoppm for conversion (more reliable than Ghostscript)
-            subprocess.run(['pdftoppm', '-png', '-r', '300', '-singlefile', pdf_file, 
-                          os.path.join(self.temp_dir, filename_base)], 
-                         capture_output=True, check=True)
+            # Use pdftoppm for conversion
+            subprocess.run(
+                ['pdftoppm', '-png', '-r', '300', '-singlefile', str(pdf_file), str(pdf_file.with_suffix(''))],
+                capture_output=True, check=True, timeout=30
+            )
             
-            # Check if image was created
-            if os.path.exists(png_file):
-                return png_file
+            if png_file.exists():
+                return str(png_file)
             else:
-                # Try alternative conversion with ImageMagick
-                subprocess.run(['convert', '-density', '300', pdf_file, png_file], 
-                             capture_output=True, check=True)
-                return png_file if os.path.exists(png_file) else None
+                return None
                 
+        except FileNotFoundError as e:
+            st.error(f"Lỗi: Lệnh `{e.filename}` không tìm thấy. Hãy chắc chắn rằng bạn đã cài đặt một bản phân phối LaTeX (như MiKTeX, TeX Live) và Poppler, và chúng đã được thêm vào PATH hệ thống.")
+            return None
         except subprocess.CalledProcessError as e:
-            st.error(f"Error compiling TikZ: {e}")
+            st.error(f"Lỗi khi biên dịch TikZ. Hãy kiểm tra lại code TikZ của bạn.")
+            st.code(e.stderr.decode('utf-8', errors='ignore'), language='bash')
             return None
         except Exception as e:
-            st.error(f"Unexpected error: {e}")
+            st.error(f"Đã xảy ra lỗi không mong muốn: {e}")
             return None
-    
+
     def add_underline_to_run(self, run):
         """Add underline formatting to a run"""
         run.font.underline = True
-    
+
     def create_word_document(self, exercises):
         """Create Word document from parsed exercises"""
         doc = Document()
-        
-        # Add title
-        title = doc.add_heading('Bài tập', 0)
-        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        doc.add_heading('Bài tập', 0).alignment = WD_ALIGN_PARAGRAPH.CENTER
         
         for idx, exercise in enumerate(exercises, 1):
-            # Add question number and text
+            # Clean the question text while preserving formulas
+            # First remove table source code from question to avoid duplication
+            question_text = re.sub(r'\\begin\{tabular\}.*?\\end\{tabular\}', '', exercise['question'], flags=re.DOTALL)
+            question_text_prepared = self.prepare_latex_for_word(question_text)
+
+            # Add question
             question_para = doc.add_paragraph()
             question_para.add_run(f'Câu {idx}. ').bold = True
-            question_para.add_run(self.clean_latex_text(exercise['question']))
-            
-            # Add choices with correct answer underlined
-            for i, choice in enumerate(exercise['choices']):
-                choice_para = doc.add_paragraph()
-                choice_label = f'    {chr(65 + i)}. '  # A, B, C, D
-                
-                # Check if this is the correct answer
-                if exercise.get('correct_choice', -1) == i:
-                    # Add underlined choice label
-                    choice_run = choice_para.add_run(choice_label)
-                    self.add_underline_to_run(choice_run)
-                    choice_run.bold = True
-                    # Add choice text (also underlined)
-                    text_run = choice_para.add_run(self.clean_latex_text(choice))
-                    self.add_underline_to_run(text_run)
-                else:
-                    # Normal choice
-                    choice_para.add_run(choice_label)
-                    choice_para.add_run(self.clean_latex_text(choice))
-            
-            # Add tables if exist
+            question_para.add_run(question_text_prepared)
+
+            # Add tables found in the question, if any
             if exercise.get('tables'):
                 for table_markdown in exercise['tables']:
-                    doc.add_paragraph()  # Add spacing
-                    self.create_table_from_markdown(doc, table_markdown)
-                    doc.add_paragraph()  # Add spacing
-            
+                    # Remove the table if it's also inside the solution to avoid double printing
+                    if not (exercise.get('solution') and table_markdown in self.extract_and_convert_tables(exercise['solution'])):
+                       self.create_table_from_markdown(doc, table_markdown)
+                       doc.add_paragraph()
+
             # Add TikZ image if exists
             if exercise['tikz']:
                 image_file = self.compile_tikz_to_image(exercise['tikz'], f'tikz_{idx}')
                 if image_file and os.path.exists(image_file):
                     doc.add_picture(image_file, width=Inches(3))
-                    last_paragraph = doc.paragraphs[-1]
-                    last_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            
+            # Add choices
+            for i, choice in enumerate(exercise['choices']):
+                choice_para = doc.add_paragraph(style='List Paragraph')
+                choice_label = f'{chr(65 + i)}. '
+                
+                is_correct = (exercise.get('correct_choice', -1) == i)
+                
+                label_run = choice_para.add_run(choice_label)
+                text_run = choice_para.add_run(self.prepare_latex_for_word(choice))
+                
+                if is_correct:
+                    label_run.bold = True
+                    self.add_underline_to_run(label_run)
+                    self.add_underline_to_run(text_run)
             
             # Add solution if exists
             if exercise['solution']:
-                # Add empty line before solution
                 doc.add_paragraph()
-                
-                # Add "Lời giải:" on its own line
                 solution_header = doc.add_paragraph()
                 solution_header.add_run('Lời giải:').bold = True
                 
-                # Add solution content on new line
-                solution_content = doc.add_paragraph()
+                # Separate text from tables in the solution
+                solution_tables_md = self.extract_and_convert_tables(exercise['solution'])
+                solution_text_only = re.sub(r'\\begin\{tabular\}.*?\\end\{tabular\}', '', exercise['solution'], flags=re.DOTALL)
                 
-                # Check if solution contains tables
-                solution_tables = self.extract_and_convert_tables(exercise['solution'])
-                if solution_tables:
-                    # Clean solution text (remove table content)
-                    clean_solution = re.sub(r'\\begin\{tabular\}.*?\\end\{tabular\}', '', exercise['solution'], flags=re.DOTALL)
-                    solution_content.add_run(self.clean_latex_text(clean_solution))
-                    
-                    # Add solution tables
-                    for table_markdown in solution_tables:
-                        doc.add_paragraph()
-                        self.create_table_from_markdown(doc, table_markdown)
-                else:
-                    solution_content.add_run(self.clean_latex_text(exercise['solution']))
-            
-            # Add spacing between exercises
+                if solution_text_only.strip():
+                    doc.add_paragraph(self.prepare_latex_for_word(solution_text_only))
+
+                # Add tables from the solution
+                for table_md in solution_tables_md:
+                    self.create_table_from_markdown(doc, table_md)
+                    doc.add_paragraph()
+
             doc.add_paragraph()
-            doc.add_paragraph()
-        
+
         return doc
-    
+
     def cleanup(self):
         """Clean up temporary files"""
-        import shutil
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
 
@@ -342,53 +327,42 @@ def main():
     st.set_page_config(page_title="LaTeX to Word Converter", page_icon="📝")
     
     st.title("🔄 LaTeX to Word Converter")
-    st.markdown("Chuyển đổi bài tập LaTeX sang định dạng Word")
+    st.markdown("Chuyển đổi bài tập LaTeX (giữ nguyên công thức toán) sang định dạng Word.")
     
-    # Create two columns
     col1, col2 = st.columns([1, 1])
     
     with col1:
         st.subheader("📥 Input LaTeX")
         
-        # Text area for LaTeX input
         latex_input = st.text_area(
             "Nhập code LaTeX của bạn:",
             height=400,
             value=r"""\begin{ex}
-\immini{Cho bảng số liệu sau về điểm thi của lớp:
-\begin{tabular}{|c|c|c|c|}
-\hline
-\textbf{STT} & \textbf{Họ tên} & \textbf{Điểm} & \textbf{Xếp loại} \\
-\hline
-1 & Nguyễn Văn A & 8.5 & Giỏi \\
-\hline
-2 & Trần Thị B & 7.0 & Khá \\
-\hline
-3 & Lê Văn C & 9.0 & Giỏi \\
-\hline
-\end{tabular}
-
-Hỏi có bao nhiêu học sinh đạt loại Giỏi?
+\immini{Cho phương trình $x^2 - 2(m-1)x + m^2 - 3 = 0$. Tìm $m$ để phương trình có hai nghiệm phân biệt.
+\begin{center}
+$x_1, x_2$ là hai nghiệm.
+\end{center}
 \choice
-{1 học sinh}
-{\True 2 học sinh}
-{3 học sinh}
-{4 học sinh}
+{$m < 2$}
+{\True $m < 2$}
+{$m > -2$}
+{$m = 2$}
 }
 \loigiai{
-Dựa vào bảng số liệu, ta thấy:
-\begin{itemize}
-\item Nguyễn Văn A: 8.5 điểm - Xếp loại Giỏi
-\item Lê Văn C: 9.0 điểm - Xếp loại Giỏi
-\end{itemize}
-Vậy có 2 học sinh đạt loại Giỏi.
+Để phương trình có hai nghiệm phân biệt, ta cần $\Delta' > 0$.
+\begin{align*}
+\Delta' &= (m-1)^2 - (m^2 - 3) \\
+&= m^2 - 2m + 1 - m^2 + 3 \\
+&= -2m + 4
+\end{align*}
+$\Delta' > 0 \Leftrightarrow -2m + 4 > 0 \Leftrightarrow 2m < 4 \Leftrightarrow m < 2$.
 
-Đáp án đúng là B.
+Vậy với $m < 2$ thì phương trình có hai nghiệm phân biệt.
 }
 \end{ex}
 
 \begin{ex}
-\immini{Dựa vào hình vẽ (Hình b), hãy chọn khẳng định đúng trong các khẳng định sau đây?
+\immini{Dựa vào hình vẽ (Hình b), hãy chọn khẳng định đúng?
 \choice
 { Điểm $M$ nằm giữa $2$ điểm $N$ và $P$}
 {\True Điểm $N$ nằm giữa $2$ điểm $M$ và $P$}
@@ -406,44 +380,33 @@ Vậy có 2 học sinh đạt loại Giỏi.
 \end{tikzpicture}
 }
 \loigiai{
-Theo hình vẽ, các điểm $M$, $N$, $P$ nằm trên một đường thẳng theo thứ tự từ trái sang phải.
-
-Vậy đáp án đúng là B.
+Theo hình vẽ, các điểm $M, N, P$ thẳng hàng và $N$ nằm giữa $M$ và $P$.
+Đáp án đúng là B.
 }
 \end{ex}"""
         )
         
-        # File upload option
         uploaded_file = st.file_uploader("Hoặc tải lên file .tex", type=['tex'])
         if uploaded_file:
             latex_input = uploaded_file.read().decode('utf-8')
-    
+
     with col2:
         st.subheader("📤 Output")
         
         if st.button("🔄 Chuyển đổi sang Word", type="primary"):
             if latex_input:
+                converter = LaTeXToWordConverter()
                 try:
                     with st.spinner("Đang xử lý..."):
-                        # Create converter instance
-                        converter = LaTeXToWordConverter()
-                        
-                        # Extract and parse exercises
                         exercises_raw = converter.extract_exercises(latex_input)
                         exercises_parsed = [converter.parse_exercise(ex) for ex in exercises_raw]
                         
-                        # Create Word document
                         doc = converter.create_word_document(exercises_parsed)
                         
-                        # Save to BytesIO
                         doc_io = io.BytesIO()
                         doc.save(doc_io)
                         doc_io.seek(0)
                         
-                        # Clean up
-                        converter.cleanup()
-                        
-                        # Offer download
                         st.success("✅ Chuyển đổi thành công!")
                         st.download_button(
                             label="📥 Tải xuống file Word",
@@ -452,10 +415,7 @@ Vậy đáp án đúng là B.
                             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                         )
                         
-                        # Show preview info
-                        st.info(f"✅ Đã chuyển đổi {len(exercises_parsed)} câu hỏi")
-                        
-                        # Show details for each question
+                        st.info(f"✅ Đã chuyển đổi {len(exercises_parsed)} câu hỏi.")
                         with st.expander("📊 Chi tiết chuyển đổi"):
                             for i, ex in enumerate(exercises_parsed, 1):
                                 st.write(f"**Câu {i}:**")
@@ -469,57 +429,38 @@ Vậy đáp án đúng là B.
                                 if ex['solution']:
                                     st.write("- Có lời giải ✓")
                                 st.write("---")
-                        
+                                
                 except Exception as e:
                     st.error(f"❌ Lỗi: {str(e)}")
+                finally:
+                    # Always clean up temp files
+                    converter.cleanup()
             else:
                 st.warning("⚠️ Vui lòng nhập nội dung LaTeX")
-    
-    # Instructions
-    with st.expander("📖 Hướng dẫn sử dụng"):
+
+    with st.expander("📖 Hướng dẫn sử dụng và Yêu cầu"):
         st.markdown("""
-        ### Cấu trúc LaTeX được hỗ trợ:
+        ### Yêu cầu hệ thống (QUAN TRỌNG)
+        Để có thể chuyển đổi hình vẽ TikZ, máy tính của bạn **bắt buộc** phải cài đặt:
+        1.  **Một bản phân phối LaTeX**: Ví dụ như [**MiKTeX**](https://miktex.org/download) (cho Windows), **MacTeX** (cho macOS), hoặc **TeX Live** (cho Linux).
+        2.  **Poppler**: Cung cấp công cụ để chuyển PDF sang ảnh. Bạn có thể tải [tại đây](https://github.com/oschwartz10612/poppler-windows/releases/).
         
-        1. **Câu hỏi**: Đặt trong `\\begin{ex}...\\end{ex}`
-        2. **Nội dung câu hỏi**: Trong `\\immini{...}` hoặc trước `\\choice`
-        3. **Các lựa chọn**: Sau `\\choice`, mỗi lựa chọn trong `{...}`
-        4. **Đáp án đúng**: Đánh dấu bằng `{\\True ...}` - sẽ được gạch chân trong Word
-        5. **Hình vẽ TikZ**: Trong `\\begin{tikzpicture}...\\end{tikzpicture}`
-        6. **Bảng**: Trong `\\begin{tabular}{|c|c|...}...\\end{tabular}`
-        7. **Lời giải**: Trong `\\loigiai{...}` - sẽ xuất hiện trên dòng riêng
+        **Lưu ý**: Sau khi cài đặt, hãy đảm bảo các thư mục chứa `pdflatex.exe` và `pdftoppm.exe` đã được thêm vào biến môi trường `PATH` của hệ thống.
         
-        ### Tính năng đặc biệt:
-        
-        #### Đánh dấu đáp án đúng:
-        ```latex
-        \\choice
-        {Phương án A}
-        {\\True Phương án B}  ← Đáp án đúng, sẽ được gạch chân
-        {Phương án C}
-        {Phương án D}
-        ```
-        
-        #### Format lời giải:
-        - "Lời giải:" sẽ được in đậm trên dòng riêng
-        - Nội dung lời giải xuất hiện ở dòng tiếp theo
-        - Hỗ trợ bảng và danh sách trong lời giải
-        
-        ### Xử lý bảng LaTeX:
-        - Bảng `tabular` được chuyển sang định dạng Markdown
-        - Hàng đầu tiên tự động được làm đậm (header)
-        - Hỗ trợ các định dạng `\\textbf{}`, `\\textit{}`, etc.
-        - Bảng trong Word sẽ có đường viền và format chuẩn
-        
-        ### Lưu ý:
-        - Ứng dụng sẽ tự động biên dịch hình TikZ thành ảnh
-        - Các ký hiệu toán học sẽ được chuyển đổi sang text thường
-        - Đáp án đúng được gạch chân và in đậm
-        - File Word xuất ra sẽ có format chuẩn với đánh số câu hỏi tự động
+        ### Cấu trúc LaTeX được hỗ trợ
+        1.  **Câu hỏi**: Đặt trong `\\begin{ex}...\\end{ex}`
+        2.  **Nội dung câu hỏi**: Trong `\\immini{...}` hoặc trước `\\choice`
+        3.  **Các lựa chọn**: Sau `\\choice`, mỗi lựa chọn trong `{...}`
+        4.  **Đáp án đúng**: Đánh dấu bằng `{\\True ...}` - sẽ được **in đậm và gạch chân** trong Word
+        5.  **Công thức toán**: Sẽ được **giữ nguyên** (ví dụ: `$x^2+y^2=z^2$`). Bạn có thể dùng add-in MathType của Word để chuyển đổi chúng sau.
+        6.  **Hình vẽ TikZ**: Trong `\\begin{tikzpicture}...\\end{tikzpicture}`
+        7.  **Bảng**: Trong `\\begin{tabular}{...}...\\end{tabular}` sẽ được chuyển thành bảng Word.
+        8.  **Lời giải**: Trong `\\loigiai{...}`
+        9.  **Các môi trường bị loại bỏ**: `\\begin{center}`, `\\begin{align}`, `\\begin{align*}` sẽ bị xóa nhưng nội dung bên trong được giữ lại.
         """)
-    
-    # Footer
+
     st.markdown("---")
-    st.markdown("💡 **Tip**: Bạn có thể copy nhiều câu hỏi cùng lúc, mỗi câu trong `\\begin{ex}...\\end{ex}`")
+    st.markdown("💡 **Tip**: Bạn có thể dán nhiều câu hỏi cùng lúc, mỗi câu trong một môi trường `\\begin{ex}...\\end{ex}`.")
 
 if __name__ == "__main__":
     main()
