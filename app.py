@@ -10,6 +10,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 import io
 import shutil
 
+# --- Class xử lý logic chuyển đổi (Không thay đổi so với phiên bản trước) ---
 # Placeholder pattern for processed elements
 TABLE_PLACEHOLDER = "__TABLE_PLACEHOLDER_{}__"
 
@@ -25,19 +26,14 @@ class LaTeXToWordConverter:
 
     def parse_exercise(self, exercise_content):
         """Parse individual exercise content to extract all its components."""
-        # The main text content to be parsed for question and choices
         parse_target = exercise_content
-        
-        # If \immini exists, it contains the primary question and choices
         immini_match = re.search(r'\\immini\{(.*?)\}', exercise_content, re.DOTALL)
         if immini_match:
             parse_target = immini_match.group(1).strip()
 
-        # The question is everything before \choice within the parse_target
         question_parts = re.split(r'\\choice', parse_target, maxsplit=1)
         question = question_parts[0].strip()
 
-        # Choices are parsed from the full exercise content to be robust
         choices = []
         correct_choice_index = -1
         choice_block_match = re.search(r'\\choice\s*(.*?)(?=\\begin\{tikzpicture\}|\\loigiai|\\end\{ex\}|$)', 
@@ -54,13 +50,11 @@ class LaTeXToWordConverter:
                         choice = re.sub(r'^\\True\s*', '', choice).strip()
                     choices.append(choice)
         
-        # TikZ picture is extracted from the full content
         tikz_match = re.search(r'\\begin\{tikzpicture\}(.*?)\\end\{tikzpicture\}', exercise_content, re.DOTALL)
         tikz = tikz_match.group(0) if tikz_match else None
         if tikz:
-             question = question.replace(tikz, "") # Clean tikz from question if it was captured
+             question = question.replace(tikz, "")
 
-        # Solution is extracted from the full content
         solution_match = re.search(r'\\loigiai\{(.*?)\}', exercise_content, re.DOTALL)
         solution = solution_match.group(1).strip() if solution_match else None
 
@@ -74,35 +68,27 @@ class LaTeXToWordConverter:
 
     def latex_table_to_word_table(self, doc, table_content):
         """Directly convert LaTeX tabular content to a Word table."""
-        # Get column specification and count
         col_spec_match = re.match(r'\{([^}]+)\}', table_content)
         col_count = 0
         if col_spec_match:
             col_count = len(re.findall(r'[lcr]', col_spec_match.group(1)))
         
-        # Get table body
         body_match = re.search(r'\}(.*)', table_content, re.DOTALL)
-        if not body_match:
-            return None
-        
+        if not body_match: return None
         body = body_match.group(1).strip()
         
         lines = body.split('\\\\')
         rows_data = []
         for line in lines:
             line = line.replace('\\hline', '').strip()
-            if not line:
-                continue
+            if not line: continue
             cells = [self.prepare_latex_for_word(cell.strip()) for cell in line.split('&')]
             if len(cells) > 0:
-                while len(cells) < col_count:
-                    cells.append('')
+                while len(cells) < col_count: cells.append('')
                 rows_data.append(cells[:col_count])
         
-        if not rows_data:
-            return None
+        if not rows_data: return None
 
-        # Create table in Word
         table = doc.add_table(rows=len(rows_data), cols=col_count)
         table.style = 'Table Grid'
         
@@ -110,73 +96,51 @@ class LaTeXToWordConverter:
             for j, cell_text in enumerate(row_cells):
                 if j < len(table.rows[i].cells):
                     table.cell(i, j).text = cell_text
-                    if i == 0: # Bold header
+                    if i == 0:
                         for p in table.cell(i, j).paragraphs:
-                            for run in p.runs:
-                                run.bold = True
+                            for run in p.runs: run.bold = True
         return table
 
     def process_content_and_placeholders(self, content):
-        """
-        Finds all tables in content, replaces them with placeholders,
-        and returns the modified content and a list of table contents.
-        """
         tables = []
-        
         def replacer(match):
             table_content = match.group(0)
-            # The full tabular content including \begin, spec, and \end
             full_table_latex = f"\\begin{{tabular}}{table_content}"
             tables.append(full_table_latex)
-            placeholder = TABLE_PLACEHOLDER.format(len(tables) - 1)
-            return placeholder
+            return TABLE_PLACEHOLDER.format(len(tables) - 1)
 
-        # Regex to find content from column spec to end of tabular
         pattern = r'(\{.*?\}.*?\\end\{tabular\})'
-        # We replace the tabular environment with a placeholder
         content_with_placeholders = re.sub(pattern, replacer, content, flags=re.DOTALL)
-        
         return content_with_placeholders, tables
     
     def add_content_to_doc(self, doc, content_with_placeholders, tables):
-        """Adds text and tables to the doc according to placeholders."""
-        # Split text by placeholders and add content sequentially
         parts = re.split(f'({TABLE_PLACEHOLDER.format("[0-9]+")})', content_with_placeholders)
-        
         for part in parts:
-            if not part:
-                continue
-            
+            if not part: continue
             placeholder_match = re.match(f'{TABLE_PLACEHOLDER.format("([0-9]+)")}', part)
             if placeholder_match:
                 table_index = int(placeholder_match.group(1))
                 if table_index < len(tables):
                     self.latex_table_to_word_table(doc, tables[table_index])
-                    doc.add_paragraph() # Add space after table
+                    doc.add_paragraph()
             else:
-                # This is a regular text part
                 prepared_text = self.prepare_latex_for_word(part)
                 if prepared_text:
                     doc.add_paragraph(prepared_text)
-
+                    
     def prepare_latex_for_word(self, text):
         """Cleans LaTeX text for Word output, preserving math formulas."""
-        # Remove environments but keep content
         text = re.sub(r'\\begin\{(center|align|align\*)\}', '', text, flags=re.DOTALL)
         text = re.sub(r'\\end\{(center|align|align\*)\}', '', text, flags=re.DOTALL)
-        text = re.sub(r'\\vspace\{.*?\}', '', text) # Remove vspace
-
-        # General cleaning
+        text = re.sub(r'\\vspace\{.*?\}', '', text)
         text = re.sub(r'\\item', '•', text)
         text = re.sub(r'\\begin\{itemize\}', '', text)
         text = re.sub(r'\\end\{itemize\}', '', text)
         text = re.sub(r'\\textbf\{([^}]*)\}', r'\1', text)
         text = re.sub(r'\\textit\{([^}]*)\}', r'\1', text)
         text = re.sub(r'\\text\{([^}]*)\}', r'\1', text)
-
         text = text.replace('\\\\', '')
         text = text.replace('\\hline', '')
-        
         return re.sub(r'\s+', ' ', text).strip()
 
     def compile_tikz_to_image(self, tikz_code, filename_base):
@@ -192,20 +156,13 @@ class LaTeXToWordConverter:
 \\end{{document}}
 """
         tex_file = os.path.join(self.temp_dir, f"{filename_base}.tex")
-        with open(tex_file, 'w', encoding='utf-8') as f:
-            f.write(latex_doc)
+        with open(tex_file, 'w', encoding='utf-8') as f: f.write(latex_doc)
             
         try:
-            subprocess.run(
-                ['pdflatex', '-interaction=nonstopmode', '-output-directory', self.temp_dir, tex_file],
-                capture_output=True, check=True, timeout=30
-            )
+            subprocess.run(['pdflatex', '-interaction=nonstopmode', '-output-directory', self.temp_dir, tex_file], capture_output=True, check=True, timeout=30)
             pdf_file = Path(self.temp_dir) / f"{filename_base}.pdf"
             png_file = Path(self.temp_dir) / f"{filename_base}.png"
-            subprocess.run(
-                ['pdftoppm', '-png', '-r', '300', '-singlefile', str(pdf_file), str(pdf_file.with_suffix(''))],
-                capture_output=True, check=True, timeout=30
-            )
+            subprocess.run(['pdftoppm', '-png', '-r', '300', '-singlefile', str(pdf_file), str(pdf_file.with_suffix(''))], capture_output=True, check=True, timeout=30)
             return str(png_file) if png_file.exists() else None
         except FileNotFoundError as e:
             st.error(f"Lỗi: Lệnh `{e.filename}` không tìm thấy. Hãy chắc chắn rằng bạn đã cài đặt LaTeX (MiKTeX, TeX Live) và Poppler, và đã thêm chúng vào PATH hệ thống.")
@@ -227,14 +184,10 @@ class LaTeXToWordConverter:
             para = doc.add_paragraph()
             para.add_run(f'Câu {idx}. ').bold = True
             
-            # Process question content (text and tables)
-            # First, remove choices and solution from the question text to avoid duplication
             question_text = ex['question']
-            
             content_with_placeholders, tables = self.process_content_and_placeholders(question_text)
             self.add_content_to_doc(para, content_with_placeholders, tables)
 
-            # Add TikZ image if it exists
             if ex['tikz']:
                 image_file = self.compile_tikz_to_image(ex['tikz'], f'tikz_{idx}')
                 if image_file:
@@ -242,7 +195,6 @@ class LaTeXToWordConverter:
                     para.add_run().add_picture(image_file, width=Inches(3))
                     para.alignment = WD_ALIGN_PARAGRAPH.CENTER
             
-            # Add choices
             for i, choice in enumerate(ex['choices']):
                 para = doc.add_paragraph(style='List Paragraph')
                 label_run = para.add_run(f'{chr(65 + i)}. ')
@@ -252,11 +204,9 @@ class LaTeXToWordConverter:
                     label_run.underline = True
                     text_run.underline = True
             
-            # Add solution if it exists
             if ex['solution']:
                 doc.add_paragraph()
                 doc.add_paragraph().add_run('Lời giải:').bold = True
-                
                 sol_content_placeholders, sol_tables = self.process_content_and_placeholders(ex['solution'])
                 self.add_content_to_doc(doc, sol_content_placeholders, sol_tables)
 
@@ -268,19 +218,16 @@ class LaTeXToWordConverter:
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
 
+
+# --- Hàm main điều khiển giao diện Streamlit (Đã cập nhật) ---
 def main():
     st.set_page_config(page_title="LaTeX to Word Converter", page_icon="📝")
     st.title("🔄 LaTeX to Word Converter (Nâng cấp)")
-    st.markdown("Chuyển đổi bài tập LaTeX sang Word, hỗ trợ bảng và cấu trúc lồng nhau.")
+    st.markdown("Chuyển đổi bài tập LaTeX sang Word, hỗ trợ bảng, cấu trúc lồng nhau và giữ nguyên công thức toán.")
     
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        st.subheader("📥 Input LaTeX")
-        latex_input = st.text_area(
-            "Nhập code LaTeX của bạn:",
-            height=500,
-            value=r"""\begin{ex}
+    # Khởi tạo session state để lưu trữ nội dung LaTeX
+    if 'latex_input' not in st.session_state:
+        st.session_state.latex_input = r"""\begin{ex}
 Hai mẫu số liệu ghép nhóm $M_1, M_2$ có bảng tần số ghép nhóm như sau:
 \begin{center}
 	$M_1 \quad$\begin{tabular}{|c|c|c|c|c|c|}
@@ -327,16 +274,38 @@ Gọi $s_1, s_2$ lần lượt là độ lệch chuẩn của mẫu số liệu 
 }
 \end{ex}
 """
+
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.subheader("📥 Input LaTeX")
+
+        # Chức năng tải file lên
+        uploaded_file = st.file_uploader(
+            "Tải lên file .tex để thay thế nội dung bên dưới:", 
+            type=['tex']
         )
         
+        # Nếu có file được tải lên, cập nhật nội dung vào session state
+        if uploaded_file is not None:
+            st.session_state.latex_input = uploaded_file.read().decode('utf-8')
+
+        # Ô nhập liệu, giá trị được liên kết với session state
+        st.text_area(
+            "Nội dung LaTeX (sẽ được cập nhật khi bạn tải file lên):",
+            key='latex_input', # key này tự động cập nhật session_state
+            height=500,
+        )
+
     with col2:
         st.subheader("📤 Output")
         if st.button("🔄 Chuyển đổi sang Word", type="primary"):
-            if latex_input:
+            # Luôn lấy nội dung từ session state để xử lý
+            if st.session_state.latex_input:
                 converter = LaTeXToWordConverter()
                 try:
                     with st.spinner("Đang xử lý... Vui lòng chờ..."):
-                        exercises_raw = converter.extract_exercises(latex_input)
+                        exercises_raw = converter.extract_exercises(st.session_state.latex_input)
                         exercises_parsed = [converter.parse_exercise(ex) for ex in exercises_raw]
                         doc = converter.create_word_document(exercises_parsed)
                         
@@ -352,11 +321,11 @@ Gọi $s_1, s_2$ lần lượt là độ lệch chuẩn của mẫu số liệu 
                             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                         )
                 except Exception as e:
-                    st.error(f"❌ Lỗi: {str(e)}")
+                    st.error(f"❌ Lỗi trong quá trình xử lý: {str(e)}")
                 finally:
                     converter.cleanup()
             else:
-                st.warning("⚠️ Vui lòng nhập nội dung LaTeX")
+                st.warning("⚠️ Vui lòng nhập nội dung LaTeX hoặc tải file lên.")
 
 if __name__ == "__main__":
     main()
