@@ -7,11 +7,14 @@ from pathlib import Path
 from docx import Document
 from docx.shared import Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+# === CÁC DÒNG ĐƯỢC THÊM VÀO ĐỂ SỬA LỖI ===
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+# ============================================
 import io
 import shutil
 
 # --- CLASS CHÍNH: Chứa toàn bộ logic xử lý LaTeX sang Word ---
-# Sử dụng một mã giữ chỗ (placeholder) để đánh dấu vị trí của các bảng
 TABLE_PLACEHOLDER = "__TABLE_PLACEHOLDER_{}__"
 
 class LaTeXToWordConverter:
@@ -31,24 +34,21 @@ class LaTeXToWordConverter:
 
     def parse_exercise(self, exercise_content):
         """Phân tích một khối bài tập để lấy ra các thành phần: câu hỏi, lựa chọn, đáp án, hình ảnh, lời giải."""
-        # Nếu có \immini, nội dung chính nằm trong đó. Nếu không, lấy toàn bộ.
         parse_target = exercise_content
         immini_match = re.search(r'\\immini\{(.*?)\}', exercise_content, re.DOTALL)
         if immini_match:
             parse_target = immini_match.group(1).strip()
 
-        # Câu hỏi là phần nằm trước \choice
         question_parts = re.split(r'\\choice', parse_target, maxsplit=1)
         question = question_parts[0].strip()
 
-        # Trích xuất các lựa chọn và đáp án đúng
         choices = []
         correct_choice_index = -1
         choice_block_match = re.search(r'\\choice\s*(.*?)(?=\\begin\{tikzpicture\}|\\loigiai|\\end\{ex\}|$)', 
                                        exercise_content, re.DOTALL)
         if choice_block_match:
             choices_text = choice_block_match.group(1)
-            choice_pattern = r'\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}' # Regex mạnh để xử lý dấu ngoặc lồng nhau
+            choice_pattern = r'\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}'
             raw_choices = re.findall(choice_pattern, choices_text)
             for choice in raw_choices:
                 choice = choice.strip()
@@ -58,20 +58,17 @@ class LaTeXToWordConverter:
                         choice = re.sub(r'^\\True\s*', '', choice).strip()
                     choices.append(choice)
         
-        # Trích xuất hình ảnh TikZ
         tikz_match = re.search(r'\\begin\{tikzpicture\}(.*?)\\end\{tikzpicture\}', exercise_content, re.DOTALL)
         tikz = tikz_match.group(0) if tikz_match else None
         if tikz:
-             question = question.replace(tikz, "") # Loại bỏ mã TikZ khỏi văn bản câu hỏi
+             question = question.replace(tikz, "")
 
-        # Trích xuất lời giải
         solution_match = re.search(r'\\loigiai\{(.*?)\}', exercise_content, re.DOTALL)
         solution = solution_match.group(1).strip() if solution_match else None
 
         return {'question': question, 'choices': choices, 'correct_choice': correct_choice_index, 'tikz': tikz, 'solution': solution}
 
     def _process_content_for_placeholders(self, content):
-        """Tìm các bảng, thay thế bằng mã giữ chỗ và trả về danh sách các bảng."""
         tables = []
         def replacer(match):
             tables.append(match.group(0))
@@ -82,10 +79,6 @@ class LaTeXToWordConverter:
         return content_with_placeholders, tables
 
     def _write_content_block(self, doc, content, prefix=""):
-        """
-        Hàm xử lý chính: Ghi một khối nội dung (văn bản + bảng) vào file Word.
-        Đây là hàm đã được sửa lỗi triệt để, đảm bảo logic chính xác.
-        """
         if not content or not content.strip():
             if prefix:
                 doc.add_paragraph().add_run(prefix).bold = True
@@ -110,7 +103,7 @@ class LaTeXToWordConverter:
                         para = doc.add_paragraph()
                         if prefix:
                             para.add_run(prefix).bold = True
-                        para.add_run(" " + prepared_text) # Thêm khoảng trắng sau prefix
+                        para.add_run(" " + prepared_text)
                         first_text_part = False
                     else:
                         doc.add_paragraph(prepared_text)
@@ -119,7 +112,6 @@ class LaTeXToWordConverter:
              doc.add_paragraph().add_run(prefix).bold = True
 
     def _latex_table_to_word_table(self, doc, latex_table):
-        """Chuyển đổi một chuỗi tabular LaTeX hoàn chỉnh thành bảng trong Word."""
         spec_match = re.search(r'\\begin\{tabular\}(\{.*?\})', latex_table)
         body_match = re.search(r'(\{.*?\})(.*)\\end\{tabular\}', latex_table, re.DOTALL)
         if not spec_match or not body_match: return
@@ -150,7 +142,6 @@ class LaTeXToWordConverter:
                             for run in p.runs: run.bold = True
     
     def prepare_latex_for_word(self, text):
-        """Dọn dẹp văn bản LaTeX, giữ lại công thức toán."""
         text = re.sub(r'\\begin\{(center|align|align\*)\}', '', text, flags=re.DOTALL)
         text = re.sub(r'\\end\{(center|align|align\*)\}', '', text, flags=re.DOTALL)
         text = re.sub(r'\\vspace\{.*?\}', '', text)
@@ -165,7 +156,6 @@ class LaTeXToWordConverter:
         return re.sub(r'\s+', ' ', text).strip()
 
     def compile_tikz_to_image(self, tikz_code, filename_base):
-        """Biên dịch mã TikZ thành file ảnh PNG."""
         latex_doc = f"\\documentclass[border=5pt]{{standalone}}\n\\usepackage{{tikz}}\n\\usepackage{{amsmath}}\n\\usepackage{{amssymb}}\n\\usetikzlibrary{{arrows.meta}}\n\\begin{{document}}\n{tikz_code}\n\\end{{document}}"
         tex_file = os.path.join(self.temp_dir, f"{filename_base}.tex")
         with open(tex_file, 'w', encoding='utf-8') as f: f.write(latex_doc)
@@ -187,16 +177,13 @@ class LaTeXToWordConverter:
             return None
     
     def create_word_document(self, exercises):
-        """Tạo file Word từ danh sách các bài tập đã được phân tích."""
         doc = Document()
         doc.add_heading('BÀI TẬP TRẮC NGHIỆM', 0).alignment = WD_ALIGN_PARAGRAPH.CENTER
-        doc.add_paragraph() # Add some space after the main title
+        doc.add_paragraph()
         
         for idx, ex in enumerate(exercises, 1):
-            # Ghi khối câu hỏi (văn bản + bảng)
             self._write_content_block(doc, ex['question'], prefix=f"Câu {idx}.")
 
-            # Chèn ảnh TikZ nếu có
             if ex['tikz']:
                 image_file = self.compile_tikz_to_image(ex['tikz'], f'tikz_{idx}')
                 if image_file:
@@ -204,27 +191,22 @@ class LaTeXToWordConverter:
                     p.add_run().add_picture(image_file, width=Inches(3.5))
                     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             
-            # Thêm các lựa chọn trắc nghiệm
             for i, choice in enumerate(ex['choices']):
                 p = doc.add_paragraph()
                 p.paragraph_format.left_indent = Inches(0.25)
-                # Dùng tab để căn chỉnh đẹp hơn
                 label_text = f'{chr(65 + i)}.\t'
                 label_run = p.add_run(label_text)
                 text_run = p.add_run(self.prepare_latex_for_word(choice))
                 
-                # Định dạng đáp án đúng
                 if ex['correct_choice'] == i:
                     label_run.bold = True
                     label_run.underline = True
                     text_run.underline = True
             
-            # Thêm lời giải nếu có
             if ex['solution']:
-                doc.add_paragraph() # Khoảng cách trước lời giải
+                doc.add_paragraph()
                 self._write_content_block(doc, ex['solution'], prefix="Lời giải:")
 
-            # Thêm một đường kẻ ngang để phân tách các câu hỏi
             if idx < len(exercises):
                 p = doc.add_paragraph()
                 p_border = OxmlElement('w:pBdr')
@@ -234,17 +216,15 @@ class LaTeXToWordConverter:
         return doc
 
     def cleanup(self):
-        """Dọn dẹp thư mục tạm sau khi hoàn tất."""
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
 
 # --- HÀM MAIN: Dựng giao diện người dùng với Streamlit ---
 def main():
     st.set_page_config(page_title="LaTeX to Word Converter", page_icon="📝", layout="wide")
-    st.title("Chuyển đổi LaTeX sang Word (Phiên bản đầy đủ)")
-    st.markdown("Một công cụ mạnh mẽ để chuyển đổi các bài tập trắc nghiệm từ định dạng LaTeX sang Microsoft Word.")
+    st.title("Chuyển đổi LaTeX sang Word (Phiên bản Hoàn chỉnh)")
+    st.markdown("Công cụ chuyển đổi các bài tập trắc nghiệm từ định dạng LaTeX sang Microsoft Word, đã sửa lỗi và cập nhật đầy đủ tính năng.")
     
-    # B1: Khởi tạo session state để lưu trữ văn bản LaTeX giữa các lần chạy lại
     if 'latex_input' not in st.session_state:
         st.session_state.latex_input = r"""\begin{ex}
 % Ví dụ 1: Câu hỏi có cả văn bản và nhiều bảng
@@ -297,8 +277,8 @@ Gọi $s_1, s_2$ lần lượt là độ lệch chuẩn của mẫu số liệu 
 }
 \end{ex}"""
 
-    # B2: Dựng giao diện, bao gồm ô nhập liệu và chức năng tải file
     col1, col2 = st.columns(2, gap="large")
+    
     with col1:
         st.subheader("📥 Dữ liệu đầu vào LaTeX")
         uploaded_file = st.file_uploader("Tải lên file .tex để thay thế nội dung bên dưới:", type=['tex'])
@@ -307,7 +287,6 @@ Gọi $s_1, s_2$ lần lượt là độ lệch chuẩn của mẫu số liệu 
 
         st.text_area("Nội dung LaTeX:", key='latex_input', height=500, help="Dán mã LaTeX của bạn vào đây hoặc tải lên một file .tex.")
 
-    # B3: Xử lý sự kiện khi người dùng nhấn nút "Chuyển đổi"
     with col2:
         st.subheader("📤 Chuyển đổi và Tải về")
         st.write("Nhấn nút bên dưới để bắt đầu quá trình chuyển đổi sang file Word.")
@@ -343,7 +322,6 @@ Gọi $s_1, s_2$ lần lượt là độ lệch chuẩn của mẫu số liệu 
             else:
                 st.warning("⚠️ Vui lòng nhập nội dung LaTeX hoặc tải file lên trước khi chuyển đổi.")
         
-        # B4: Hiển thị hướng dẫn
         with st.expander("📖 Xem Hướng dẫn sử dụng và Yêu cầu cài đặt", expanded=False):
             st.markdown("""
             ### Yêu cầu hệ thống (QUAN TRỌNG)
