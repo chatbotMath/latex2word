@@ -186,7 +186,19 @@ class LaTeXToWordConverter:
     def clean_latex_text(self, text):
         """Clean LaTeX commands from text for Word"""
         # Remove common LaTeX commands
-        text = re.sub(r'\$([^$]+)\
+        text = re.sub(r'\$([^$]+)\$', r'\1', text)  # Remove math delimiters
+        text = re.sub(r'\\item', '•', text)
+        text = re.sub(r'\\begin\{itemize\}', '', text)
+        text = re.sub(r'\\end\{itemize\}', '', text)
+        text = re.sub(r'\\textbf\{([^}]*)\}', r'\1', text)  # Extract bold text
+        text = re.sub(r'\\textit\{([^}]*)\}', r'\1', text)  # Extract italic text
+        text = re.sub(r'\\text\{([^}]*)\}', r'\1', text)    # Extract text
+        text = re.sub(r'\\[a-zA-Z]+\{([^}]*)\}', r'\1', text)  # Remove other commands
+        text = re.sub(r'\\([a-zA-Z]+)', r'\1', text)  # Remove backslash commands
+        text = re.sub(r'\\\\', '', text)  # Remove line breaks
+        text = re.sub(r'\\hline', '', text)  # Remove hline
+        text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
+        return text.strip()
     
     def compile_tikz_to_image(self, tikz_code, filename_base):
         """Compile TikZ code to image"""
