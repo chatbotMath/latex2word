@@ -1,0 +1,7 @@
+texlive-base
+texlive-latex-base
+texlive-latex-extra
+texlive-pictures
+texlive-fonts-recommended
+poppler-utils
+imagemagick
