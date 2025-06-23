@@ -7,10 +7,8 @@ from pathlib import Path
 from docx import Document
 from docx.shared import Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-# === CÁC DÒNG ĐƯỢC THÊM VÀO ĐỂ SỬA LỖI ===
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-# ============================================
 import io
 import shutil
 
@@ -211,7 +209,10 @@ class LaTeXToWordConverter:
                 p = doc.add_paragraph()
                 p_border = OxmlElement('w:pBdr')
                 p_border.set(qn('w:bottom'), '{"w:val": "single", "w:sz": "6", "w:space": "1", "w:color": "auto"}')
-                p.get_or_add_pPr().append(p_border)
+                
+                # === SỬA LỖI AttributeError TẠI ĐÂY ===
+                # Truy cập thuộc tính XML nội bộ `_p` để thêm đường viền, thay vì `p` trực tiếp
+                p._p.get_or_add_pPr().append(p_border)
 
         return doc
 
@@ -222,8 +223,8 @@ class LaTeXToWordConverter:
 # --- HÀM MAIN: Dựng giao diện người dùng với Streamlit ---
 def main():
     st.set_page_config(page_title="LaTeX to Word Converter", page_icon="📝", layout="wide")
-    st.title("Chuyển đổi LaTeX sang Word (Phiên bản Hoàn chỉnh)")
-    st.markdown("Công cụ chuyển đổi các bài tập trắc nghiệm từ định dạng LaTeX sang Microsoft Word, đã sửa lỗi và cập nhật đầy đủ tính năng.")
+    st.title("Chuyển đổi LaTeX sang Word (Phiên bản Ổn định)")
+    st.markdown("Công cụ chuyển đổi các bài tập trắc nghiệm từ định dạng LaTeX sang Microsoft Word.")
     
     if 'latex_input' not in st.session_state:
         st.session_state.latex_input = r"""\begin{ex}
